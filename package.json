@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "dev": "node scripts/dev.js",
     "dev:api": "node server/index.js",
     "dev:web": "vite",
+    "stop": "node scripts/stop-dev.js",
     "start": "node server/index.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

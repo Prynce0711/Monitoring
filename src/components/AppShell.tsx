@@ -8,7 +8,7 @@ const pageNames: Record<string, string> = {
   '/': 'Overview',
   '/check-ins': 'Venue check-ins',
   '/internet': 'Dedicated internet',
-  '/presentation': 'Presentation view',
+  '/admin/presentation': 'Presentation content',
   '/account': 'Your account',
   '/users': 'User accounts',
 }

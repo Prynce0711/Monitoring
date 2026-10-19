@@ -62,7 +62,8 @@ or the public internet.
 - Separate searchable, filterable tables for venue check-ins and dedicated
   internet circuits
 - Create and edit records on dedicated pages
-- Full-screen presentation view with slide navigation and live updates
+- Full-screen live operations dashboard
+- Admin-managed project tracker, event request tables, and Service Desk / shift screenshots
 - SQLite persistence through a local JSON API
 - Server-sent events refresh open pages after a record changes
 - Responsive layout with Tailwind CSS
@@ -72,12 +73,20 @@ or the public internet.
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Start the frontend and API for local development. |
+| `npm stop` | Stop the frontend and API started by `npm run dev`. |
 | `npm run build` | Type-check and create a production frontend build. |
 | `npm run lint` | Run ESLint. |
 | `npm start` | Start the SQLite-backed API server. |
 | `npm run preview` | Preview the built frontend alongside the SQLite API. |
 
 Set `PORT` to change the API port or `DB_PATH` to choose another SQLite file.
+
+Open the live operations dashboard at `/presentation`. It remains available
+only to signed-in users. Administrators can edit its project and request tables
+and upload the latest Service Desk and shift screenshots at
+`/admin/presentation`; changes are pushed to open dashboard pages. Fullscreen
+must be started with the on-screen button because browsers require a user
+action before entering fullscreen.
 
 ## Project structure
 

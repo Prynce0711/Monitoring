@@ -1,8 +1,6 @@
 import {
   Activity,
-  CalendarDays,
   Gauge,
-  Globe2,
   KeyRound,
   Presentation,
   Radio,
@@ -14,15 +12,13 @@ import { useAuth } from '../auth/context'
 
 const primaryLinks = [
   { to: '/', label: 'Overview', icon: Gauge, end: true },
-  { to: '/check-ins', label: 'Venue check-ins', icon: CalendarDays },
-  { to: '/internet', label: 'Dedicated internet', icon: Globe2 },
-  { to: '/presentation', label: 'Presentation view', icon: Presentation },
+
 ]
 
 export function Sidebar() {
   const { user } = useAuth()
   return (
-    <aside className="sidebar flex h-screen w-[248px] shrink-0 flex-col bg-[#111820] px-4 py-6 text-slate-300 max-lg:w-[76px] max-lg:items-center max-lg:px-2">
+    <aside className="sidebar sticky top-0 flex h-screen w-[248px] shrink-0 flex-col self-start bg-[#111820] px-4 py-6 text-slate-300 max-lg:w-[76px] max-lg:items-center max-lg:px-2">
       <a className="mb-9 flex w-full items-center gap-3 px-2 max-lg:justify-center max-lg:px-0" href="/">
         <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#d2f36a] text-[#1c2912]">
           <Activity size={21} strokeWidth={2.4} />
@@ -49,6 +45,18 @@ export function Sidebar() {
             <span className="max-lg:hidden">{label}</span>
           </NavLink>
         ))}
+        {user?.role === 'admin' && (
+          <NavLink
+            to="/admin/presentation"
+            title="Presentation content"
+            className={({ isActive }) =>
+              `flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors max-lg:justify-center max-lg:px-0 ${isActive ? 'bg-[#26323c] text-[#d2f36a]' : 'text-slate-400 hover:bg-white/5 hover:text-white'}`
+            }
+          >
+            <Presentation size={17} />
+            <span className="max-lg:hidden">Presentation content</span>
+          </NavLink>
+        )}
         <NavLink
           to="/account"
           title="Your account"

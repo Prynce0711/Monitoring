@@ -37,15 +37,10 @@ button {
   background: #d5f078;
 }
 
-.presentation-screen:fullscreen {
+.dashboard-screen {
   position: fixed;
-  z-index: 100;
   inset: 0;
-  width: 100vw;
-  height: 100vh;
-  min-height: 100vh;
-  overflow: auto;
-  background: #f3f5f1;
+  z-index: 50;
 }
 
 @media print {

@@ -1,102 +1,139 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  Activity,
-  ArrowLeft,
-  ArrowRight,
-  CalendarDays,
-  CircleAlert,
-  Clock3,
-  Maximize,
-  Minimize,
-  Pause,
-  Play,
-  RadioTower,
-  Wifi,
-} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Activity, ArrowLeft, ChevronLeft, ChevronRight, Maximize, Minimize } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { StatusBadge } from '../../components/StatusBadge'
 import { api } from '../../services/api'
-import type { CheckIn, InternetCircuit, MonitoringSummary } from '../../types/monitoring'
+import type {
+  InternetRequest,
+  PresentationContent,
+  PresentationProject,
+  PresentationStatus,
+  TeamEndorsement,
+  VenueSetupRequest,
+} from '../../types/monitoring'
 
-const checkInsPerSlide = 8
-const circuitsPerSlide = 7
-const slideIntervalMs = 12_000
+const slideDurationSeconds = 30
+const requestsPerSlide = 6
+const panelClass = 'min-h-0 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_10px_35px_rgba(24,39,30,0.07)]'
+const thClass = 'whitespace-normal px-3 py-3 text-left text-sm font-semibold uppercase tracking-wide text-slate-400'
+const tdClass = 'px-3 py-3 text-base font-semibold leading-snug text-slate-700'
 
-type Slide =
-  | { type: 'overview' }
-  | { type: 'checkins'; page: number; records: CheckIn[] }
-  | { type: 'circuits'; page: number; records: InternetCircuit[] }
+type PresentationSlide =
+  | { type: 'projects'; page: number; totalPages: number; records: PresentationProject[] }
+  | { type: 'internet'; page: number; totalPages: number; records: InternetRequest[] }
+  | { type: 'venue'; page: number; totalPages: number; records: VenueSetupRequest[] }
+  | { type: 'endorsements'; page: number; totalPages: number; records: TeamEndorsement[] }
+  | { type: 'upload'; kind: 'service-desk' | 'shift'; title: string }
 
-function pages<T>(records: T[], perPage: number) {
+function pages<T>(records: T[], pageSize: number) {
   if (records.length === 0) return [[] as T[]]
   const result: T[][] = []
-  for (let index = 0; index < records.length; index += perPage) {
-    result.push(records.slice(index, index + perPage))
+  for (let index = 0; index < records.length; index += pageSize) {
+    result.push(records.slice(index, index + pageSize))
   }
   return result
 }
 
-function formatDate(value: string, options: Intl.DateTimeFormatOptions) {
-  return new Intl.DateTimeFormat(undefined, options).format(new Date(value))
+function buildSlides(content: PresentationContent): PresentationSlide[] {
+  const slides: PresentationSlide[] = []
+  slides.push({
+    type: 'projects',
+    page: 1,
+    totalPages: 1,
+    records: content.projects.filter((project) => project.status !== 'Done'),
+  })
+  const internetPages = pages(content.internetRequests, requestsPerSlide)
+  internetPages.forEach((records, index) => slides.push({
+    type: 'internet',
+    page: index + 1,
+    totalPages: internetPages.length,
+    records,
+  }))
+  const venuePages = pages(content.venueSetupRequests, requestsPerSlide)
+  venuePages.forEach((records, index) => slides.push({
+    type: 'venue',
+    page: index + 1,
+    totalPages: venuePages.length,
+    records,
+  }))
+  const endorsementPages = pages(content.teamEndorsements, requestsPerSlide)
+  endorsementPages.forEach((records, index) => slides.push({
+    type: 'endorsements',
+    page: index + 1,
+    totalPages: endorsementPages.length,
+    records,
+  }))
+  if (content.uploads.some((upload) => upload.kind === 'service-desk')) {
+    slides.push({ type: 'upload', kind: 'service-desk', title: 'Service Desk update' })
+  }
+  if (content.uploads.some((upload) => upload.kind === 'shift')) {
+    slides.push({ type: 'upload', kind: 'shift', title: 'IT shift schedule' })
+  }
+  return slides
 }
 
-function PresentationMetric({ title, value, detail, icon: Icon, accent }: {
-  title: string
-  value: number
-  detail: string
-  icon: typeof CalendarDays
-  accent: string
-}) {
+function formatDate(value: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date)
+}
+
+function StatusPill({ status }: { status: PresentationStatus }) {
+  const tone = status === 'Done'
+    ? 'bg-emerald-50 text-emerald-700'
+    : status === 'Ongoing'
+      ? 'bg-blue-50 text-blue-700'
+      : 'bg-amber-50 text-amber-700'
+  return <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{status}</span>
+}
+
+function SlideTitle({ title, page, totalPages }: { title: string; page: number; totalPages: number }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-[#fbfcfa] p-5 sm:p-7">
-      <div className={`mb-4 flex h-11 w-11 items-center justify-center rounded-xl ${accent}`}>
-        <Icon size={21} />
+    <div className="flex items-end justify-between gap-4">
+      <div>
+        <p className="text-base font-semibold uppercase tracking-[0.15em] text-[#819d3a]">Monitorly operations</p>
+        <h2 className="mt-2 text-4xl font-semibold tracking-tight text-[#172b40] sm:text-5xl">{title}</h2>
       </div>
-      <p className="text-sm font-medium text-slate-500 sm:text-base">{title}</p>
-      <p className="mt-2 text-4xl font-semibold tracking-tight text-slate-900 sm:text-5xl">{value}</p>
-      <p className="mt-2 text-xs text-slate-500 sm:text-sm">{detail}</p>
+      {totalPages > 1 && <span className="rounded-full bg-white px-4 py-2 text-base font-semibold text-slate-500 shadow-sm">Page {page} of {totalPages}</span>}
     </div>
   )
 }
 
-function PresentationPage() {
-  const screenRef = useRef<HTMLElement>(null)
+export function PresentationPage() {
   const requestSequence = useRef(0)
-  const [summary, setSummary] = useState<MonitoringSummary | null>(null)
-  const [checkIns, setCheckIns] = useState<CheckIn[]>([])
-  const [circuits, setCircuits] = useState<InternetCircuit[]>([])
+  const [content, setContent] = useState<PresentationContent>({
+    projects: [],
+    internetRequests: [],
+    venueSetupRequests: [],
+    teamEndorsements: [],
+    uploads: [],
+  })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(false)
-  const [slideIndex, setSlideIndex] = useState(0)
-  const [playing, setPlaying] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [fullscreenError, setFullscreenError] = useState<string | null>(null)
+  const [slideIndex, setSlideIndex] = useState(0)
+  const [secondsRemaining, setSecondsRemaining] = useState(slideDurationSeconds)
+  const slideIndexRef = useRef(0)
+  const slideCountRef = useRef(1)
+  const secondsRemainingRef = useRef(slideDurationSeconds)
 
   useEffect(() => {
     let active = true
     const load = async () => {
       const sequence = ++requestSequence.current
       try {
-        const [nextSummary, nextCheckIns, nextCircuits] = await Promise.all([
-          api.getSummary(),
-          api.getCheckIns(),
-          api.getCircuits(),
-        ])
+        const nextContent = await api.getPresentationContent()
         if (active && sequence === requestSequence.current) {
-          setSummary(nextSummary)
-          setCheckIns(nextCheckIns)
-          setCircuits(nextCircuits)
-          const nextSlideCount = 1
-            + Math.max(1, Math.ceil(nextCheckIns.length / checkInsPerSlide))
-            + Math.max(1, Math.ceil(nextCircuits.length / circuitsPerSlide))
-          setSlideIndex((index) => Math.min(index, nextSlideCount - 1))
+          setContent(nextContent)
           setError(null)
           setLoading(false)
         }
       } catch (cause) {
         if (active && sequence === requestSequence.current) {
-          setError(cause instanceof Error ? cause.message : 'Unable to load presentation data.')
+          setError(cause instanceof Error ? cause.message : 'Unable to load dashboard data.')
           setLoading(false)
         }
       }
@@ -118,247 +155,206 @@ function PresentationPage() {
     }
   }, [])
 
-  const slides = useMemo<Slide[]>(() => [
-    { type: 'overview' },
-    ...pages(checkIns, checkInsPerSlide).map((records, page) => ({ type: 'checkins' as const, page, records })),
-    ...pages(circuits, circuitsPerSlide).map((records, page) => ({ type: 'circuits' as const, page, records })),
-  ], [checkIns, circuits])
-  const currentSlide = slides[slideIndex] ?? slides[0]
-
   useEffect(() => {
-    if (!playing) return
-    const timer = window.setInterval(() => {
-      setSlideIndex((index) => (index + 1) % slides.length)
-    }, slideIntervalMs)
-    return () => window.clearInterval(timer)
-  }, [playing, slides.length])
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey || event.ctrlKey || event.metaKey) return
-      if (event.target instanceof HTMLElement && event.target.closest('button, a, input, textarea, select')) return
-      if (event.key === 'ArrowRight' || event.key === 'PageDown') {
-        event.preventDefault()
-        setSlideIndex((index) => (index + 1) % slides.length)
-      } else if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
-        event.preventDefault()
-        setSlideIndex((index) => (index - 1 + slides.length) % slides.length)
-      } else if (event.key === ' ') {
-        event.preventDefault()
-        setPlaying((value) => !value)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [slides.length])
-
-  useEffect(() => {
-    const onFullscreenChange = () => {
-      setIsFullscreen(document.fullscreenElement === screenRef.current)
-    }
+    const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement))
     document.addEventListener('fullscreenchange', onFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
+
+  const slides = buildSlides(content)
+  const currentSlideIndex = slideIndex % slides.length
+
+  useEffect(() => {
+    slideIndexRef.current = slideIndex % slides.length
+    slideCountRef.current = slides.length
+  }, [slideIndex, slides.length])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (secondsRemainingRef.current > 1) {
+        secondsRemainingRef.current -= 1
+      } else {
+        slideIndexRef.current = (slideIndexRef.current + 1) % slideCountRef.current
+        secondsRemainingRef.current = slideDurationSeconds
+        setSlideIndex(slideIndexRef.current)
+      }
+      setSecondsRemaining(secondsRemainingRef.current)
+    }, 1000)
+    return () => window.clearInterval(timer)
   }, [])
 
   async function toggleFullscreen() {
     setFullscreenError(null)
     try {
       if (document.fullscreenElement) await document.exitFullscreen()
-      else await screenRef.current?.requestFullscreen()
+      else await document.documentElement.requestFullscreen()
     } catch (cause) {
       setFullscreenError(cause instanceof Error ? cause.message : 'Fullscreen mode is unavailable.')
     }
   }
 
-  function moveSlide(direction: -1 | 1) {
-    setSlideIndex((index) => (index + direction + slides.length) % slides.length)
+  const currentSlide = slides[currentSlideIndex]
+  const currentUpload = currentSlide.type === 'upload'
+    ? content.uploads.find((upload) => upload.kind === currentSlide.kind)
+    : undefined
+  const countdownLabel = `${Math.floor(secondsRemaining / 60).toString().padStart(2, '0')}:${(secondsRemaining % 60).toString().padStart(2, '0')}`
+
+  function goToSlide(index: number) {
+    const nextIndex = (index + slides.length) % slides.length
+    slideIndexRef.current = nextIndex
+    secondsRemainingRef.current = slideDurationSeconds
+    setSlideIndex(nextIndex)
+    setSecondsRemaining(slideDurationSeconds)
   }
 
-  const title = currentSlide.type === 'overview'
-    ? 'Operations overview'
-    : currentSlide.type === 'checkins'
-      ? 'Venue check-ins'
-      : 'Dedicated internet'
-  const pageLabel = currentSlide.type === 'overview'
-    ? 'Live operations'
-    : `Page ${currentSlide.page + 1}`
-
   return (
-    <section ref={screenRef} className="presentation-screen min-h-[calc(100vh-68px)] bg-[#f3f5f1] px-4 py-5 sm:px-7 sm:py-7 lg:px-10">
-      <div className="mx-auto flex min-h-[calc(100vh-124px)] w-full max-w-[1500px] flex-col">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <main className="dashboard-screen relative h-dvh overflow-hidden bg-[#f3f5f1] p-2 sm:p-3 lg:p-4">
+      <div className="mx-auto grid h-full max-w-[1900px] grid-rows-[auto_minmax(0,1fr)_auto] gap-4 overflow-hidden">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            {!isFullscreen && (
-              <Link to="/" aria-label="Back to dashboard" className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50">
-                <ArrowLeft size={17} />
-              </Link>
-            )}
-            <div>
-              <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
-                <Activity size={13} className="text-[#819d3a]" /> Monitorly presentation
-                <span className={`ml-1 inline-flex items-center gap-1.5 rounded-full px-2 py-1 normal-case tracking-normal ${live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-                  <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                  {live ? 'Live updates on' : 'Connecting…'}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-slate-500">{pageLabel} · Changes appear here automatically</p>
+            <Link to="/" aria-label="Back to administration" className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50">
+              <ArrowLeft size={17} />
+            </Link>
+            <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-400">
+              <Activity size={16} className="text-[#819d3a]" /> Monitorly operations
+              <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 normal-case tracking-normal ${live ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                {live ? 'Live updates on' : 'Connecting…'}
+              </span>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setPlaying((value) => !value)} aria-label={playing ? 'Pause presentation' : 'Play presentation'} className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-              {playing ? <Pause size={15} /> : <Play size={15} />}
-              <span className="hidden sm:inline">{playing ? 'Pause' : 'Auto-play'}</span>
-            </button>
-            <button type="button" onClick={() => void toggleFullscreen()} className="inline-flex h-10 items-center gap-2 rounded-xl bg-[#17211a] px-3 text-xs font-semibold text-white hover:bg-[#26362a]">
+            <Link to="/admin/presentation" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">Manage slides</Link>
+            <button type="button" onClick={() => void toggleFullscreen()} className="inline-flex h-10 items-center gap-2 rounded-lg bg-[#17211a] px-3 text-sm font-semibold text-white hover:bg-[#26362a]">
               {isFullscreen ? <Minimize size={15} /> : <Maximize size={15} />}
               {isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
             </button>
           </div>
-        </div>
+        </header>
 
-        {error && (
-          <div role="alert" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            {error}
-          </div>
-        )}
-        {fullscreenError && <p role="alert" className="mb-3 text-xs text-rose-700">{fullscreenError}</p>}
+        {(error || fullscreenError) && <p role="alert" className="absolute right-4 top-2 z-20 max-w-[60vw] truncate rounded-lg border border-amber-200 bg-amber-50 px-3 py-1 text-xs text-amber-800">{error ?? fullscreenError}</p>}
 
-        <article aria-label={`${title} presentation slide`} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_12px_35px_rgba(24,39,30,0.08)]">
-          <header className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-100 px-6 py-6 sm:px-10 sm:py-8 lg:px-14">
-            <div>
-              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-[#819d3a]">
-                {currentSlide.type === 'overview' ? 'Operations briefing' : currentSlide.type === 'checkins' ? 'Venue operations' : 'Network health'}
-              </p>
-              <h1 className="text-2xl font-semibold tracking-tight text-[#172b40] sm:text-4xl lg:text-5xl">{title}</h1>
-              <p className="mt-2 text-sm text-slate-500">
-                {currentSlide.type === 'overview'
-                  ? formatDate(new Date().toISOString(), { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
-                  : currentSlide.type === 'checkins'
-                    ? `${checkIns.length} tracked check-ins`
-                    : `${circuits.length} monitored circuits`}
-              </p>
-            </div>
-            <div className="pb-1 text-left sm:text-right">
-              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">Slide {slideIndex + 1} of {slides.length}</p>
-              <p className="mt-1 text-xs font-semibold text-slate-600">{formatDate(new Date().toISOString(), { hour: 'numeric', minute: '2-digit' })} · Live</p>
-            </div>
-          </header>
-
-          <div className="flex flex-1 flex-col justify-center px-5 py-6 sm:px-10 sm:py-8 lg:px-14">
-            {loading ? (
-              <div className="py-20 text-center text-sm text-slate-400">Loading the latest monitoring data…</div>
-            ) : currentSlide.type === 'overview' ? (
-              <div className="space-y-6">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-5">
-                  <PresentationMetric title="Tracked check-ins" value={summary?.checkins.total ?? checkIns.length} detail={`${summary?.checkins.checkedIn ?? 0} completed`} icon={CalendarDays} accent="bg-lime-50 text-lime-700" />
-                  <PresentationMetric title="Pending check-ins" value={summary?.checkins.pending ?? 0} detail={`${summary?.checkins.atRisk ?? 0} need attention`} icon={Clock3} accent="bg-amber-50 text-amber-700" />
-                  <PresentationMetric title="Circuits online" value={summary?.circuits.online ?? 0} detail={`of ${summary?.circuits.total ?? circuits.length} monitored`} icon={Wifi} accent="bg-blue-50 text-blue-700" />
-                  <PresentationMetric title="Network alerts" value={(summary?.circuits.degraded ?? 0) + (summary?.circuits.offline ?? 0)} detail={`${summary?.circuits.offline ?? 0} offline`} icon={CircleAlert} accent="bg-rose-50 text-rose-700" />
-                </div>
-                <div className="grid gap-5 md:grid-cols-2">
-                  <section className="rounded-2xl border border-slate-200 p-5 sm:p-6">
-                    <div className="mb-4 flex items-center justify-between">
-                      <h2 className="text-sm font-semibold text-slate-800 sm:text-base">Upcoming check-ins</h2>
-                      <span className="text-xs text-slate-400">{checkIns.length} total</span>
-                    </div>
-                    <div className="divide-y divide-slate-100">
-                      {checkIns.slice(0, 4).map((record) => (
-                        <div key={record.id} className="flex items-center justify-between gap-3 py-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold text-slate-800 sm:text-sm">{record.event}</p>
-                            <p className="mt-1 truncate text-[11px] text-slate-500">{record.venue} · {formatDate(record.checkInAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</p>
-                          </div>
-                          <StatusBadge status={record.status} />
-                        </div>
-                      ))}
-                      {checkIns.length === 0 && <p className="py-8 text-center text-sm text-slate-400">No check-ins recorded.</p>}
-                    </div>
-                  </section>
-                  <section className="rounded-2xl border border-slate-200 p-5 sm:p-6">
-                    <div className="mb-4 flex items-center justify-between">
-                      <h2 className="text-sm font-semibold text-slate-800 sm:text-base">Circuit health</h2>
-                      <RadioTower size={17} className="text-[#819d3a]" />
-                    </div>
-                    <div className="divide-y divide-slate-100">
-                      {circuits.slice(0, 4).map((circuit) => (
-                        <div key={circuit.id} className="flex items-center justify-between gap-3 py-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold text-slate-800 sm:text-sm">{circuit.site}</p>
-                            <p className="mt-1 truncate text-[11px] text-slate-500">{circuit.provider} · {circuit.bandwidth}</p>
-                          </div>
-                          <StatusBadge status={circuit.status} />
-                        </div>
-                      ))}
-                      {circuits.length === 0 && <p className="py-8 text-center text-sm text-slate-400">No circuits recorded.</p>}
-                    </div>
-                  </section>
-                </div>
-              </div>
-            ) : currentSlide.type === 'checkins' ? (
-              <div className="overflow-hidden rounded-xl border border-slate-200">
-                <div className="grid grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(120px,0.8fr)_minmax(110px,0.8fr)] gap-3 bg-[#172b40] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em] text-white sm:px-6">
-                  <span>Event</span><span>Venue</span><span>Check-in</span><span>Status</span>
-                </div>
-                {currentSlide.records.length === 0 ? (
-                  <p className="px-6 py-16 text-center text-sm text-slate-400">No check-ins recorded.</p>
-                ) : currentSlide.records.map((record, index) => (
-                  <div key={record.id} className={`grid min-h-[62px] grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(120px,0.8fr)_minmax(110px,0.8fr)] items-center gap-3 border-t border-slate-100 px-4 py-3 sm:px-6 ${index % 2 ? 'bg-[#fafbf9]' : 'bg-white'}`}>
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-semibold text-slate-800 sm:text-sm">{record.event}</p>
-                      <p className="mt-1 truncate text-[10px] text-slate-400">{record.contact}</p>
-                    </div>
-                    <span className="truncate text-xs text-slate-600 sm:text-sm">{record.venue}</span>
-                    <span className="text-[11px] text-slate-500 sm:text-xs">{formatDate(record.checkInAt, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>
-                    <span><StatusBadge status={record.status} /></span>
+        <section className="flex min-h-0 flex-col gap-4 overflow-hidden">
+          {loading ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center text-base text-slate-400">Loading presentation…</div>
+          ) : currentSlide.type === 'projects' ? (
+            <>
+              <SlideTitle title="Active projects and activities" page={currentSlide.page} totalPages={currentSlide.totalPages} />
+              <div className="grid min-h-0 flex-1 grid-cols-2 grid-flow-col content-stretch gap-x-5 overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-3 shadow-[0_10px_35px_rgba(24,39,30,0.07)] sm:p-5"
+                style={{ gridTemplateRows: `repeat(${Math.max(1, Math.ceil(currentSlide.records.length / 2))}, minmax(0, 1fr))` }}>
+                {currentSlide.records.map((project, index) => (
+                  <div key={project.id} className="flex min-h-0 min-w-0 items-center gap-2 overflow-hidden border-b border-slate-100 py-1">
+                    <span className="w-7 shrink-0 text-sm font-semibold tabular-nums text-slate-400">{String(index + 1).padStart(2, '0')}</span>
+                    <span className="line-clamp-2 min-w-0 flex-1 whitespace-normal break-words text-lg font-bold leading-tight text-slate-800">{project.title || 'Untitled activity'}</span>
+                    <StatusPill status={project.status} />
                   </div>
                 ))}
+                {currentSlide.records.length === 0 && <p className="col-span-2 flex items-center justify-center text-base text-slate-400">No active projects.</p>}
               </div>
-            ) : (
-              <div className="overflow-hidden rounded-xl border border-slate-200">
-                <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(100px,0.8fr)_minmax(100px,0.7fr)_minmax(105px,0.8fr)] gap-3 bg-[#172b40] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.12em] text-white sm:px-6">
-                  <span>Venue / site</span><span>Provider</span><span>Circuit ID</span><span>Bandwidth</span><span>Status</span>
-                </div>
-                {currentSlide.records.length === 0 ? (
-                  <p className="px-6 py-16 text-center text-sm text-slate-400">No internet circuits recorded.</p>
-                ) : currentSlide.records.map((circuit, index) => (
-                  <div key={circuit.id} className={`grid min-h-[66px] grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(100px,0.8fr)_minmax(100px,0.7fr)_minmax(105px,0.8fr)] items-center gap-3 border-t border-slate-100 px-4 py-3 sm:px-6 ${index % 2 ? 'bg-[#fafbf9]' : 'bg-white'}`}>
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-semibold text-slate-800 sm:text-sm">{circuit.site}</p>
-                      <p className="mt-1 truncate text-[10px] text-slate-400">Checked {formatDate(circuit.lastChecked, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</p>
-                    </div>
-                    <span className="truncate text-xs text-slate-600 sm:text-sm">{circuit.provider}</span>
-                    <span className="truncate font-mono text-[10px] text-slate-500 sm:text-xs">{circuit.circuitId}</span>
-                    <span className="text-xs text-slate-600 sm:text-sm">{circuit.bandwidth}</span>
-                    <div className="min-w-0">
-                      <StatusBadge status={circuit.status} />
-                      {circuit.notes && <p className="mt-1 truncate text-[10px] text-slate-400">{circuit.notes}</p>}
-                    </div>
-                  </div>
-                ))}
+            </>
+          ) : currentSlide.type === 'internet' ? (
+            <>
+              <SlideTitle title="Dedicated connection requests" page={currentSlide.page} totalPages={currentSlide.totalPages} />
+              <div className={`${panelClass} min-h-0 flex-1 overflow-auto`}>
+                <table className="w-full table-fixed text-left">
+                  <colgroup>
+                    <col className="w-[8%]" />
+                    <col className="w-[14%]" />
+                    <col className="w-[13%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[11%]" />
+                  </colgroup>
+                  <thead className="sticky top-0 bg-slate-50">
+                    <tr>{['Status', 'Event', 'Date / time', 'Bandwidth', 'SSID name', 'Password name', 'Room', 'Organizer', 'Remarks'].map((label) => <th className={thClass} key={label}>{label}</th>)}</tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentSlide.records.map((request) => (
+                      <tr key={request.id}>
+                        <td className={tdClass}><StatusPill status={request.status} /></td>
+                        <td className={`${tdClass} whitespace-normal break-words font-medium text-slate-800`}>{request.eventName || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{formatDate(request.startDate)}{request.startTime ? ` · ${request.startTime}` : ''}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.bandwidth || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.ssidName || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.passwordName || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.functionRoom || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.eventsOrganizer || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.remarks || '—'}</td>
+                      </tr>
+                    ))}
+                    {currentSlide.records.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-base text-slate-400">No dedicated connection requests.</td></tr>}
+                  </tbody>
+                </table>
               </div>
-            )}
-          </div>
-
-          <footer className="flex items-center justify-between border-t border-slate-100 px-5 py-4 sm:px-8">
-            <p className="text-[10px] text-slate-400 sm:text-xs">Use ← → to navigate · Space to {playing ? 'pause' : 'play'}</p>
-            <div className="flex items-center gap-3">
-              <div className="hidden items-center gap-1.5 sm:flex" aria-label="Slide indicators">
-                {slides.map((slide, index) => (
-                  <button key={`${slide.type}-${index}`} type="button" onClick={() => setSlideIndex(index)} aria-label={`Go to slide ${index + 1}`} aria-current={index === slideIndex ? 'step' : undefined} className={`h-2 rounded-full transition-all ${index === slideIndex ? 'w-6 bg-[#819d3a]' : 'w-2 bg-slate-200 hover:bg-slate-300'}`} />
-                ))}
+            </>
+          ) : currentSlide.type === 'venue' ? (
+            <>
+              <SlideTitle title="Venue setup requests" page={currentSlide.page} totalPages={currentSlide.totalPages} />
+              <div className={`${panelClass} min-h-0 flex-1 overflow-auto`}>
+                <table className="w-full table-fixed text-left">
+                  <thead className="sticky top-0 bg-slate-50">
+                    <tr>{['Status', 'Event', 'Date', 'BEO', 'Computers', 'Room', 'Organizer'].map((label) => <th className={thClass} key={label}>{label}</th>)}</tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currentSlide.records.map((request) => (
+                      <tr key={request.id}>
+                        <td className={tdClass}><StatusPill status={request.status} /></td>
+                        <td className={`${tdClass} whitespace-normal break-words font-medium text-slate-800`}>{request.eventDescription || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{formatDate(request.startDate)}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.beoNumber || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.noOfComputers || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.functionRoom || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{request.eventsOrganizer || '—'}</td>
+                      </tr>
+                    ))}
+                    {currentSlide.records.length === 0 && <tr><td colSpan={7} className="px-4 py-8 text-center text-base text-slate-400">No venue setup requests.</td></tr>}
+                  </tbody>
+                </table>
               </div>
-              <button type="button" onClick={() => moveSlide(-1)} aria-label="Previous slide" className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
-                <ArrowLeft size={15} />
-              </button>
-              <button type="button" onClick={() => moveSlide(1)} aria-label="Next slide" className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#17211a] text-white hover:bg-[#26362a]">
-                <ArrowRight size={15} />
-              </button>
+            </>
+          ) : currentSlide.type === 'endorsements' ? (
+            <>
+              <SlideTitle title="Team endorsement" page={currentSlide.page} totalPages={currentSlide.totalPages} />
+              <div className={`${panelClass} min-h-0 flex-1 overflow-auto`}>
+                <table className="w-full table-fixed text-left">
+                  <thead className="sticky top-0 bg-[#17637f] text-white">
+                    <tr>{['Item No', 'Endorse date', 'Notes', 'Assign to', 'Status'].map((label) => <th className={`${thClass} text-white`} key={label}>{label}</th>)}</tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {currentSlide.records.map((endorsement, index) => (
+                      <tr key={endorsement.id} className={index % 2 === 0 ? 'bg-slate-100' : 'bg-white'}>
+                        <td className={tdClass}>{(currentSlide.page - 1) * requestsPerSlide + index + 1}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{formatDate(endorsement.endorseDate)}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{endorsement.notes || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words`}>{endorsement.assignTo || '—'}</td>
+                        <td className={`${tdClass} whitespace-normal break-words capitalize`}>{endorsement.status}</td>
+                      </tr>
+                    ))}
+                    {currentSlide.records.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-base text-slate-400">No team endorsements.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-2xl border border-slate-200/80 bg-white p-4">
+              {currentUpload
+                ? <img src={currentUpload.imageUrl} alt={currentSlide.title} className="h-full w-full object-contain" />
+                : <p className="text-base text-slate-500">This slide image is unavailable.</p>}
             </div>
-          </footer>
-        </article>
+          )}
+        </section>
+
+        <footer className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/80 bg-white px-4 py-3">
+          <p className="text-base font-medium text-slate-500">Slide {currentSlideIndex + 1} of {slides.length} <span className="mx-1 text-slate-300">·</span> advances in <span className="font-semibold tabular-nums text-slate-800">{countdownLabel}</span></p>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => goToSlide(currentSlideIndex - 1)} aria-label="Previous slide" className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"><ChevronLeft size={20} /></button>
+            <button type="button" onClick={() => goToSlide(currentSlideIndex + 1)} aria-label="Next slide" className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50"><ChevronRight size={20} /></button>
+          </div>
+        </footer>
       </div>
-    </section>
+    </main>
   )
 }
-
-export { PresentationPage }

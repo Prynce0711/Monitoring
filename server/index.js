@@ -53,7 +53,102 @@ database.exec(`
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS presentation_projects (
+    id TEXT PRIMARY KEY,
+    sort_order INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('Pending', 'Ongoing', 'Done'))
+  );
+  CREATE TABLE IF NOT EXISTS internet_requests (
+    id TEXT PRIMARY KEY,
+    sort_order INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('Pending', 'Ongoing', 'Done')),
+    event_name TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    bandwidth TEXT NOT NULL,
+    ssid_name TEXT NOT NULL DEFAULT '',
+    password_name TEXT NOT NULL DEFAULT '',
+    function_room TEXT NOT NULL,
+    events_organizer TEXT NOT NULL,
+    remarks TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS venue_setup_requests (
+    id TEXT PRIMARY KEY,
+    sort_order INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('Pending', 'Ongoing', 'Done')),
+    event_description TEXT NOT NULL,
+    start_date TEXT NOT NULL,
+    beo_number TEXT NOT NULL,
+    no_of_computers TEXT NOT NULL,
+    function_room TEXT NOT NULL,
+    events_organizer TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS team_endorsements (
+    id TEXT PRIMARY KEY,
+    sort_order INTEGER NOT NULL,
+    endorse_date TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    assign_to TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('Pending', 'Ongoing', 'Done'))
+  );
+  CREATE TABLE IF NOT EXISTS presentation_uploads (
+    kind TEXT PRIMARY KEY CHECK (kind IN ('service-desk', 'shift')),
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    image_data BLOB NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `)
+
+const internetRequestColumns = new Set(
+  database.prepare('PRAGMA table_info(internet_requests)').all().map((column) => column.name),
+)
+if (!internetRequestColumns.has('ssid_name')) {
+  database.exec("ALTER TABLE internet_requests ADD COLUMN ssid_name TEXT NOT NULL DEFAULT ''")
+}
+if (!internetRequestColumns.has('password_name')) {
+  database.exec("ALTER TABLE internet_requests ADD COLUMN password_name TEXT NOT NULL DEFAULT ''")
+}
+
+if (database.prepare('SELECT COUNT(*) AS total FROM presentation_projects').get().total === 0) {
+  const initialProjects = [
+    ['Refresh Core Network Switch - Nov 9, Delivery', 'Pending'],
+    ['Refresh Firewall FortiGate - Nov 9, Delivery', 'Pending'],
+    ['Shiji Kunlun eSignature Cloud', 'Ongoing'],
+    ['Configure 3 laptops for check-in venue', 'Pending'],
+    ['6 TV signage displays, 24 inches - Rizal', 'Pending'],
+    ['ASEAN Summit - Preparation Network/Wireless/Linkbroad IPTV/UPS', 'Pending'],
+    ['APIPA - House of Representative - DIA 100Mbps', 'Pending'],
+    ['QCR PCI Audit - October 26-27', 'Pending'],
+    ['VMware migration to Sangfor', 'Pending'],
+    ['Veeam Vault Cloud Backup Replication Solution', 'Pending'],
+    ['Fixed Asset Equipment Disposal - Network Devices, Cables, Computers and Monitors', 'Pending'],
+    ['Bake House - Opening Preparations', 'Pending'],
+    ['Additional ISP - 400 Mbps', 'Pending'],
+    ['Infrastructure Network Alignment ISP, BGP, Core, HSIA', 'Pending'],
+    ['HSIA Gateway Upgrade', 'Pending'],
+    ['Finance Digitalization - RFP, COC etc', 'Pending'],
+    ['HR Digitalization - COE etc', 'Pending'],
+    ['CSR and SSL Certificate Installation: Opera and SCM', 'Pending'],
+    ['Fridge Monitoring Equipment - Cabling Works & Access Points', 'Pending'],
+    ['KPC Replacement - Circles Events Cafe', 'Pending'],
+    ['Thermal Printer: Shang Palace', 'Pending'],
+    ['ServiceDesk / System Access / Tickets', 'Pending'],
+    ['SBSSI - HQ Set-up 5 Computers to B3 - HR Training Room 26-30 October', 'Pending'],
+    ['65 Inches IPTV Floors 11-14 Installation', 'Pending'],
+    ['Wireless Project: AP 1427', 'Ongoing'],
+    ['Vingcard Lockset Upgrade', 'Pending'],
+    ['Transition from the Converge Kabelnet box to Cignal', 'Pending'],
+    ['LBTechnology Contract for IPTV - December 31', 'Pending'],
+  ]
+  const insertProject = database.prepare(`
+    INSERT INTO presentation_projects (id, sort_order, title, status) VALUES (?, ?, ?, ?)
+  `)
+  for (const [index, [title, status]] of initialProjects.entries()) {
+    insertProject.run(randomUUID(), index + 1, title, status)
+  }
+}
 
 const now = new Date()
 const isoAt = (hoursFromNow) =>
@@ -248,11 +343,11 @@ async function initializeAdmin() {
   console.log(`Created initial administrator account: ${username}`)
 }
 
-async function readBody(request) {
+async function readBody(request, maxLength = 1_000_000) {
   let body = ''
   for await (const chunk of request) {
     body += chunk
-    if (body.length > 1_000_000) throw new HttpError(413, 'Request body is too large.')
+    if (body.length > maxLength) throw new HttpError(413, 'Request body is too large.')
   }
   try {
     return JSON.parse(body)
@@ -276,6 +371,14 @@ function optionalText(value, label) {
   return value.trim()
 }
 
+function tableText(value, label) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value !== 'string' || value.length > 300) {
+    throw new HttpError(400, `${label} must be 300 characters or fewer.`)
+  }
+  return value.trim()
+}
+
 function objectBody(value) {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new HttpError(400, 'Request body must be a JSON object.')
@@ -286,6 +389,12 @@ function objectBody(value) {
 function dateText(value, label) {
   const result = text(value, label)
   if (Number.isNaN(Date.parse(result))) throw new HttpError(400, `${label} must be a valid date.`)
+  return result
+}
+
+function tableDate(value, label) {
+  const result = tableText(value, label)
+  if (result && Number.isNaN(Date.parse(result))) throw new HttpError(400, `${label} must be a valid date.`)
   return result
 }
 
@@ -348,6 +457,169 @@ function summary() {
     FROM internet_circuits
   `).get()
   return { checkins, circuits }
+}
+
+function presentationContent() {
+  const projects = database.prepare(`
+    SELECT id, sort_order AS sortOrder, title, status
+    FROM presentation_projects ORDER BY sort_order, id
+  `).all()
+  const internetRequests = database.prepare(`
+    SELECT id, sort_order AS sortOrder, status, event_name AS eventName,
+      start_date AS startDate, start_time AS startTime, bandwidth,
+      ssid_name AS ssidName, password_name AS passwordName,
+      function_room AS functionRoom, events_organizer AS eventsOrganizer, remarks
+    FROM internet_requests ORDER BY sort_order, id
+  `).all()
+  const venueSetupRequests = database.prepare(`
+    SELECT id, sort_order AS sortOrder, status, event_description AS eventDescription,
+      start_date AS startDate, beo_number AS beoNumber,
+      no_of_computers AS noOfComputers, function_room AS functionRoom,
+      events_organizer AS eventsOrganizer
+    FROM venue_setup_requests ORDER BY sort_order, id
+  `).all()
+  const teamEndorsements = database.prepare(`
+    SELECT id, sort_order AS sortOrder, endorse_date AS endorseDate,
+      notes, assign_to AS assignTo, status
+    FROM team_endorsements ORDER BY sort_order, id
+  `).all()
+  const uploads = database.prepare(`
+    SELECT kind, file_name AS fileName, mime_type AS mimeType,
+      updated_at AS updatedAt, length(image_data) AS size
+    FROM presentation_uploads ORDER BY kind
+  `).all().map((upload) => ({
+    ...upload,
+    imageUrl: `/api/presentation/uploads/${upload.kind}/image?v=${encodeURIComponent(upload.updatedAt)}`,
+  }))
+  return { projects, internetRequests, venueSetupRequests, teamEndorsements, uploads }
+}
+
+function inputRows(value, label, maximum) {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw new HttpError(400, `${label} must be a list of no more than ${maximum} entries.`)
+  }
+  const ids = new Set()
+  return value.map((item, index) => {
+    objectBody(item)
+    const id = item.id
+    if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id) || ids.has(id)) {
+      throw new HttpError(400, `${label} entry ${index + 1} has an invalid or duplicate ID.`)
+    }
+    ids.add(id)
+    return { id, sortOrder: index + 1, item }
+  })
+}
+
+function statusFor(value) {
+  return choice(value, 'Status', ['Pending', 'Ongoing', 'Done'])
+}
+
+function savePresentationContent(body) {
+  const projects = inputRows(body.projects, 'Projects', 500).map(({ id, sortOrder, item }) => ({
+    id,
+    sortOrder,
+    title: tableText(item.title, 'Project title'),
+    status: statusFor(item.status),
+  }))
+  const internetRequests = inputRows(body.internetRequests, 'Internet requests', 500).map(({ id, sortOrder, item }) => ({
+    id,
+    sortOrder,
+    status: statusFor(item.status),
+    eventName: tableText(item.eventName, 'Event name'),
+    startDate: tableDate(item.startDate, 'Start date'),
+    startTime: tableText(item.startTime, 'Start time'),
+    bandwidth: tableText(item.bandwidth, 'Bandwidth'),
+    ssidName: tableText(item.ssidName, 'SSID name'),
+    passwordName: tableText(item.passwordName, 'Password name'),
+    functionRoom: tableText(item.functionRoom, 'Function room'),
+    eventsOrganizer: tableText(item.eventsOrganizer, 'Events organizer'),
+    remarks: optionalText(item.remarks, 'Remarks'),
+  }))
+  const venueSetupRequests = inputRows(body.venueSetupRequests, 'Venue setup requests', 500).map(({ id, sortOrder, item }) => ({
+    id,
+    sortOrder,
+    status: statusFor(item.status),
+    eventDescription: tableText(item.eventDescription, 'Event description'),
+    startDate: tableDate(item.startDate, 'Start date'),
+    beoNumber: tableText(item.beoNumber, 'BEO number'),
+    noOfComputers: tableText(item.noOfComputers, 'Number of computers'),
+    functionRoom: tableText(item.functionRoom, 'Function room'),
+    eventsOrganizer: tableText(item.eventsOrganizer, 'Events organizer'),
+  }))
+  const teamEndorsements = inputRows(body.teamEndorsements, 'Team endorsements', 500).map(({ id, sortOrder, item }) => ({
+    id,
+    sortOrder,
+    endorseDate: tableDate(item.endorseDate, 'Endorse date'),
+    notes: optionalText(item.notes, 'Endorsement notes'),
+    assignTo: tableText(item.assignTo, 'Assigned team member'),
+    status: statusFor(item.status),
+  }))
+
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec('DELETE FROM presentation_projects; DELETE FROM internet_requests; DELETE FROM venue_setup_requests; DELETE FROM team_endorsements;')
+    const insertProject = database.prepare(`
+      INSERT INTO presentation_projects (id, sort_order, title, status) VALUES (?, ?, ?, ?)
+    `)
+    for (const project of projects) {
+      insertProject.run(project.id, project.sortOrder, project.title, project.status)
+    }
+    const insertInternet = database.prepare(`
+      INSERT INTO internet_requests
+        (id, sort_order, status, event_name, start_date, start_time, bandwidth, ssid_name, password_name, function_room, events_organizer, remarks)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const request of internetRequests) {
+      insertInternet.run(
+        request.id, request.sortOrder, request.status, request.eventName, request.startDate,
+        request.startTime, request.bandwidth, request.ssidName, request.passwordName,
+        request.functionRoom, request.eventsOrganizer, request.remarks,
+      )
+    }
+    const insertVenue = database.prepare(`
+      INSERT INTO venue_setup_requests
+        (id, sort_order, status, event_description, start_date, beo_number, no_of_computers, function_room, events_organizer)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const request of venueSetupRequests) {
+      insertVenue.run(
+        request.id, request.sortOrder, request.status, request.eventDescription, request.startDate,
+        request.beoNumber, request.noOfComputers, request.functionRoom, request.eventsOrganizer,
+      )
+    }
+    const insertEndorsement = database.prepare(`
+      INSERT INTO team_endorsements (id, sort_order, endorse_date, notes, assign_to, status)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    for (const endorsement of teamEndorsements) {
+      insertEndorsement.run(
+        endorsement.id, endorsement.sortOrder, endorsement.endorseDate,
+        endorsement.notes, endorsement.assignTo, endorsement.status,
+      )
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function verifiedImage(value) {
+  if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new HttpError(400, 'Image data must be valid base64.')
+  }
+  const image = Buffer.from(value, 'base64')
+  if (image.length === 0 || image.length > 8 * 1024 * 1024) {
+    throw new HttpError(413, 'Image must be no larger than 8 MB.')
+  }
+  const isPng = image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  const isJpeg = image.length >= 3 && image[0] === 0xff && image[1] === 0xd8 && image[2] === 0xff
+  const isWebp = image.length >= 12 && image.toString('ascii', 0, 4) === 'RIFF' &&
+    image.toString('ascii', 8, 12) === 'WEBP'
+  if (!isPng && !isJpeg && !isWebp) {
+    throw new HttpError(400, 'Only PNG, JPEG, or WebP images are supported.')
+  }
+  return { image, mimeType: isPng ? 'image/png' : isJpeg ? 'image/jpeg' : 'image/webp' }
 }
 
 await initializeAdmin()
@@ -450,6 +722,66 @@ const server = createServer(async (request, response) => {
       for (const activeSessionId of activeSessionIds) closeSessionStreams(activeSessionId.id)
       setSessionCookie(response, token)
       json(response, 200, { ok: true })
+      return
+    }
+
+    if (request.method === 'GET' && path === '/api/presentation/content') {
+      json(response, 200, presentationContent())
+      return
+    }
+
+    const imageMatch = path.match(/^\/api\/presentation\/uploads\/(service-desk|shift)\/image$/)
+    if (request.method === 'GET' && imageMatch) {
+      const upload = database.prepare(`
+        SELECT mime_type AS mimeType, image_data AS imageData
+        FROM presentation_uploads WHERE kind = ?
+      `).get(imageMatch[1])
+      if (!upload) throw new HttpError(404, 'No screenshot has been uploaded for this slide.')
+      response.writeHead(200, {
+        'Content-Type': upload.mimeType,
+        'Content-Length': upload.imageData.length,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+      })
+      response.end(upload.imageData)
+      return
+    }
+
+    if (request.method === 'PUT' && path === '/api/admin/presentation/content') {
+      requireAdmin(session)
+      savePresentationContent(objectBody(await readBody(request)))
+      publishChange('presentation')
+      json(response, 200, presentationContent())
+      return
+    }
+
+    const uploadMatch = path.match(/^\/api\/admin\/presentation\/uploads\/(service-desk|shift)$/)
+    if (uploadMatch && request.method === 'POST') {
+      requireAdmin(session)
+      const body = objectBody(await readBody(request, 12_000_000))
+      const fileName = text(body.fileName, 'File name')
+      const { image, mimeType } = verifiedImage(body.data)
+      database.prepare(`
+        INSERT INTO presentation_uploads (kind, file_name, mime_type, image_data, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(kind) DO UPDATE SET
+          file_name = excluded.file_name,
+          mime_type = excluded.mime_type,
+          image_data = excluded.image_data,
+          updated_at = excluded.updated_at
+      `).run(uploadMatch[1], fileName, mimeType, image, new Date().toISOString())
+      publishChange('presentation')
+      json(response, 201, presentationContent())
+      return
+    }
+
+    if (uploadMatch && request.method === 'DELETE') {
+      requireAdmin(session)
+      const result = database.prepare('DELETE FROM presentation_uploads WHERE kind = ?').run(uploadMatch[1])
+      if (result.changes === 0) throw new HttpError(404, 'No screenshot has been uploaded for this slide.')
+      publishChange('presentation')
+      json(response, 200, presentationContent())
       return
     }
 
